@@ -27,7 +27,7 @@ class LedgerService(
     private val locks = ConcurrentHashMap<AccountId, ReentrantLock>()
 
     fun createAccount(userId: UserId, initialDeposit: Money): AccountId {
-        isPositiveAmount(initialDeposit)
+        if (!isPositiveAmount(initialDeposit)) throw InvalidAmount("Initial deposit must be greater than zero")
         val accountId = AccountId.generate()
         val account = Account(accountId, userId, initialDeposit.currency)
         val record = AccountRecord(
@@ -40,19 +40,23 @@ class LedgerService(
     }
 
     fun deposit(accountId: AccountId, amount: Money) {
-        isPositiveAmount(amount)
+        if (!isPositiveAmount(amount)) throw InvalidAmount("Deposit amount must be greater than zero")
         lockOneAccount(accountId) {
             val record = ensureGetAccountRecord(accountId)
-            isCurrencyMatch(record.account, amount)
+            if (!isCurrencyMatch(record.account, amount)) {
+                throw CurrencyMismatch("Deposit currency does not match the account")
+            }
             ledgerStore.put(record.applied(newEntry(accountId, amount, TransactionType.DEPOSIT)))
         }
     }
 
     fun withdraw(accountId: AccountId, amount: Money) {
-        isPositiveAmount(amount)
+        if (!isPositiveAmount(amount)) throw InvalidAmount("Withdrawal amount must be greater than zero")
         lockOneAccount(accountId) {
             val record = ensureGetAccountRecord(accountId)
-            isCurrencyMatch(record.account, amount)
+            if (!isCurrencyMatch(record.account, amount)) {
+                throw CurrencyMismatch("Withdrawal currency does not match the account")
+            }
             if (record.balance < amount) throw InsufficientFunds()
             ledgerStore.put(record.applied(newEntry(accountId, amount, TransactionType.WITHDRAWAL)))
         }
@@ -60,19 +64,27 @@ class LedgerService(
 
     fun transfer(sourceId: AccountId, destinationId: AccountId, amount: Money) {
         if (sourceId == destinationId) throw SameAccountTransfer()
-        isPositiveAmount(amount)
+        if (!isPositiveAmount(amount)) throw InvalidAmount("Transfer amount must be greater than zero")
         lockTwoAccounts(sourceId, destinationId) {
             val source = ensureGetAccountRecord(sourceId)
             val destination = ensureGetAccountRecord(destinationId)
-            isCurrencyMatch(source.account, amount)
-            isCurrencyMatch(destination.account, amount)
+            if (!isCurrencyMatch(source.account, amount)) {
+                throw CurrencyMismatch("Transfer currency does not match the source account")
+            }
+            if (!isCurrencyMatch(destination.account, amount)) {
+                throw CurrencyMismatch("Transfer currency does not match the destination account")
+            }
             if (source.balance < amount) throw InsufficientFunds()
 
             val transactionId = TransactionId.generate()
             val timestamp = Instant.now(clock)
             ledgerStore.put(
-                source.applied(newEntry(sourceId, amount, TransactionType.TRANSFER_OUT, transactionId, timestamp)),
-                destination.applied(newEntry(destinationId, amount, TransactionType.TRANSFER_IN, transactionId, timestamp)),
+                source.applied(
+                    newEntry(sourceId, amount, TransactionType.TRANSFER_OUT, transactionId, timestamp),
+                ),
+                destination.applied(
+                    newEntry(destinationId, amount, TransactionType.TRANSFER_IN, transactionId, timestamp),
+                ),
             )
         }
     }
@@ -106,13 +118,9 @@ class LedgerService(
     private fun ensureGetAccountRecord(accountId: AccountId): AccountRecord =
         ledgerStore.get(accountId) ?: throw AccountNotFound(accountId)
 
-    private fun isPositiveAmount(amount: Money) {
-        if (amount.amountMinor.signum() <= 0) throw InvalidAmount()
-    }
+    private fun isPositiveAmount(amount: Money): Boolean = amount.amountMinor.signum() > 0
 
-    private fun isCurrencyMatch(account: Account, amount: Money) {
-        if (account.currency != amount.currency) throw CurrencyMismatch()
-    }
+    private fun isCurrencyMatch(account: Account, amount: Money): Boolean = account.currency == amount.currency
 
     private fun lockFor(accountId: AccountId): ReentrantLock =
         locks.computeIfAbsent(accountId) { ReentrantLock() }

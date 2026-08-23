@@ -2,13 +2,13 @@ package banking.domain
 
 sealed class BankingException(message: String) : RuntimeException(message)
 
-class InvalidAmount : BankingException("Amount must be greater than zero")
+class InvalidAmount(message: String = "Amount must be greater than zero") : BankingException(message)
 
 class AccountNotFound(accountId: AccountId) :
     BankingException("Account ${accountId.value} was not found")
 
 class InsufficientFunds : BankingException("Insufficient funds")
 
-class CurrencyMismatch : BankingException("Currency does not match the account")
+class CurrencyMismatch(message: String = "Currency does not match the account") : BankingException(message)
 
 class SameAccountTransfer : BankingException("Cannot transfer to the same account")

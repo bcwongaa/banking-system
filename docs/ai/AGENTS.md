@@ -10,6 +10,8 @@ Shared entry for **Codex**, **Grok Build**, and **Claude Code** (Claude loads th
 GUIDES_ROOT=../../LLM-dev-guides
 ```
 
+`GUIDES_ROOT` is a private, local guide suite that is **not** part of this repository. This file is kept under `docs/ai/` as a record of how the AI tooling was directed; see `README.md` → "AI usage".
+
 | Need | Open |
 |---|---|
 | Bugfix | `GUIDES_ROOT/guides/code-style/RULES.md` + `GUIDES_ROOT/guides/testing/RULES.md` (repro test) |

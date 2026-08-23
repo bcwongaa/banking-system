@@ -10,6 +10,9 @@ import banking.domain.Money
 import banking.domain.SameAccountTransfer
 import banking.domain.TransactionType
 import banking.domain.UserId
+import banking.persistence.AccountRecord
+import banking.persistence.InMemoryLedgerStore
+import banking.persistence.LedgerStore
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
@@ -250,6 +253,18 @@ class LedgerServiceTest {
     }
 
     @Test
+    fun transfer_commits_both_sides_in_a_single_store_write() {
+        val store = RecordingStore()
+        val service = LedgerService(clock = clock, ledgerStore = store)
+        val source = service.createAccount(userId(), usd(100))
+        val destination = service.createAccount(userId(), usd(20))
+        store.writes.clear()
+        service.transfer(source, destination, usd(30))
+        val write = store.writes.single()
+        assertEquals(setOf(source, destination), write.map { it.account.accountId }.toSet())
+    }
+
+    @Test
     fun failed_transfer_does_not_create_ledger_entries() {
         val service = service()
         val source = service.createAccount(userId(), usd(100))
@@ -315,6 +330,17 @@ class LedgerServiceTest {
     }
 
     private fun service(): LedgerService = LedgerService(clock = clock)
+
+    private class RecordingStore(
+        private val inner: InMemoryLedgerStore = InMemoryLedgerStore(),
+    ) : LedgerStore by inner {
+        val writes = mutableListOf<List<AccountRecord>>()
+
+        override fun put(vararg records: AccountRecord) {
+            writes += records.toList()
+            inner.put(*records)
+        }
+    }
 
     private fun usd(cents: Long): Money = Money(cents, usd)
 

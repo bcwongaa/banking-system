@@ -22,12 +22,12 @@ import java.util.concurrent.locks.ReentrantLock
 
 class LedgerService(
     private val clock: Clock = Clock.systemUTC(),
-    private val store: LedgerStore = InMemoryLedgerStore(),
+    private val ledgerStore: LedgerStore = InMemoryLedgerStore(),
 ) {
     private val locks = ConcurrentHashMap<AccountId, ReentrantLock>()
 
     fun createAccount(userId: UserId, initialDeposit: Money): AccountId {
-        requirePositive(initialDeposit)
+        isPositiveAmount(initialDeposit)
         val accountId = AccountId.generate()
         val account = Account(accountId, userId, initialDeposit.currency)
         val record = AccountRecord(
@@ -35,80 +35,59 @@ class LedgerService(
             balance = initialDeposit,
             entries = listOf(newEntry(accountId, initialDeposit, TransactionType.DEPOSIT)),
         )
-        check(store.putIfAbsent(record)) { "Generated account id collided" }
+        check(ledgerStore.putIfAbsent(record)) { "Generated account id collided" }
         return accountId
     }
 
     fun deposit(accountId: AccountId, amount: Money) {
-        withLock(accountId) {
-            val record = ensureRecord(accountId)
-            requirePositive(amount)
-            requireMatchingCurrency(record.account, amount)
-            store.put(
-                record.copy(
-                    balance = record.balance + amount,
-                    entries = record.entries + newEntry(accountId, amount, TransactionType.DEPOSIT),
-                ),
-            )
+        isPositiveAmount(amount)
+        lockOneAccount(accountId) {
+            val record = ensureGetAccountRecord(accountId)
+            isCurrencyMatch(record.account, amount)
+            ledgerStore.put(record.applied(newEntry(accountId, amount, TransactionType.DEPOSIT)))
         }
     }
 
     fun withdraw(accountId: AccountId, amount: Money) {
-        withLock(accountId) {
-            val record = ensureRecord(accountId)
-            requirePositive(amount)
-            requireMatchingCurrency(record.account, amount)
+        isPositiveAmount(amount)
+        lockOneAccount(accountId) {
+            val record = ensureGetAccountRecord(accountId)
+            isCurrencyMatch(record.account, amount)
             if (record.balance < amount) throw InsufficientFunds()
-            store.put(
-                record.copy(
-                    balance = record.balance - amount,
-                    entries = record.entries + newEntry(accountId, amount, TransactionType.WITHDRAWAL),
-                ),
-            )
+            ledgerStore.put(record.applied(newEntry(accountId, amount, TransactionType.WITHDRAWAL)))
         }
     }
 
     fun transfer(sourceId: AccountId, destinationId: AccountId, amount: Money) {
         if (sourceId == destinationId) throw SameAccountTransfer()
-        requirePositive(amount)
-        withLocks(sourceId, destinationId) {
-            val source = ensureRecord(sourceId)
-            val destination = ensureRecord(destinationId)
-            requireMatchingCurrency(source.account, amount)
-            requireMatchingCurrency(destination.account, amount)
+        isPositiveAmount(amount)
+        lockTwoAccounts(sourceId, destinationId) {
+            val source = ensureGetAccountRecord(sourceId)
+            val destination = ensureGetAccountRecord(destinationId)
+            isCurrencyMatch(source.account, amount)
+            isCurrencyMatch(destination.account, amount)
             if (source.balance < amount) throw InsufficientFunds()
+
             val transactionId = TransactionId.generate()
             val timestamp = Instant.now(clock)
-            store.put(
-                source.copy(
-                    balance = source.balance - amount,
-                    entries = source.entries + newEntry(
-                        accountId = sourceId,
-                        amount = amount,
-                        type = TransactionType.TRANSFER_OUT,
-                        transactionId = transactionId,
-                        timestamp = timestamp,
-                    ),
-                ),
-            )
-            store.put(
-                destination.copy(
-                    balance = destination.balance + amount,
-                    entries = destination.entries + newEntry(
-                        accountId = destinationId,
-                        amount = amount,
-                        type = TransactionType.TRANSFER_IN,
-                        transactionId = transactionId,
-                        timestamp = timestamp,
-                    ),
-                ),
+            ledgerStore.put(
+                source.applied(newEntry(sourceId, amount, TransactionType.TRANSFER_OUT, transactionId, timestamp)),
+                destination.applied(newEntry(destinationId, amount, TransactionType.TRANSFER_IN, transactionId, timestamp)),
             )
         }
     }
 
-    fun balance(accountId: AccountId): Money = ensureRecord(accountId).balance
+    fun balance(accountId: AccountId): Money = ensureGetAccountRecord(accountId).balance
 
-    fun history(accountId: AccountId): List<LedgerEntry> = ensureRecord(accountId).entries.toList()
+    fun history(accountId: AccountId): List<LedgerEntry> = ensureGetAccountRecord(accountId).entries.toList()
+
+    private fun AccountRecord.applied(entry: LedgerEntry): AccountRecord {
+        val newBalance = when (entry.type) {
+            TransactionType.DEPOSIT, TransactionType.TRANSFER_IN -> balance + entry.amount
+            TransactionType.WITHDRAWAL, TransactionType.TRANSFER_OUT -> balance - entry.amount
+        }
+        return copy(balance = newBalance, entries = entries + entry)
+    }
 
     private fun newEntry(
         accountId: AccountId,
@@ -124,21 +103,21 @@ class LedgerService(
         timestamp = timestamp,
     )
 
-    private fun ensureRecord(accountId: AccountId): AccountRecord =
-        store.get(accountId) ?: throw AccountNotFound(accountId)
+    private fun ensureGetAccountRecord(accountId: AccountId): AccountRecord =
+        ledgerStore.get(accountId) ?: throw AccountNotFound(accountId)
 
-    private fun requirePositive(amount: Money) {
+    private fun isPositiveAmount(amount: Money) {
         if (amount.amountMinor.signum() <= 0) throw InvalidAmount()
     }
 
-    private fun requireMatchingCurrency(account: Account, amount: Money) {
+    private fun isCurrencyMatch(account: Account, amount: Money) {
         if (account.currency != amount.currency) throw CurrencyMismatch()
     }
 
     private fun lockFor(accountId: AccountId): ReentrantLock =
         locks.computeIfAbsent(accountId) { ReentrantLock() }
 
-    private inline fun <T> withLock(accountId: AccountId, action: () -> T): T {
+    private inline fun <T> lockOneAccount(accountId: AccountId, action: () -> T): T {
         val lock = lockFor(accountId)
         lock.lock()
         try {
@@ -148,12 +127,12 @@ class LedgerService(
         }
     }
 
-    private inline fun <T> withLocks(
+    private inline fun <T> lockTwoAccounts(
         firstId: AccountId,
         secondId: AccountId,
         action: () -> T,
     ): T {
-        val (first, second) = ordered(firstId, secondId)
+        val (first, second) = orderAccount(firstId, secondId)
         val firstLock = lockFor(first)
         val secondLock = lockFor(second)
         firstLock.lock()
@@ -169,10 +148,11 @@ class LedgerService(
         }
     }
 
-    private fun ordered(firstId: AccountId, secondId: AccountId): Pair<AccountId, AccountId> =
-        if (firstId.value.toString() <= secondId.value.toString()) {
-            firstId to secondId
-        } else {
-            secondId to firstId
+    private fun orderAccount(firstId: AccountId, secondId: AccountId): Pair<AccountId, AccountId> =
+        if (firstId.value <= secondId.value) {
+            firstId to secondId 
         }
+        else {
+            secondId to firstId
+    }
 }

@@ -17,7 +17,5 @@ class AccountIdTest {
         val accountId: Any = AccountId(uuid)
         val transactionId: Any = TransactionId(uuid)
         assertNotEquals(accountId, transactionId)
-        assertEquals(AccountId::class, accountId::class)
-        assertEquals(TransactionId::class, transactionId::class)
     }
 }

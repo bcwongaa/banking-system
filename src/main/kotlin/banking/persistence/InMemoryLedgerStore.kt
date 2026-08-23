@@ -8,8 +8,8 @@ class InMemoryLedgerStore : LedgerStore {
 
     override fun get(accountId: AccountId): AccountRecord? = records[accountId]
 
-    override fun put(record: AccountRecord) {
-        records[record.account.accountId] = record
+    override fun put(vararg records: AccountRecord) {
+        records.forEach { this.records[it.account.accountId] = it }
     }
 
     override fun putIfAbsent(record: AccountRecord): Boolean =

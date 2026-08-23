@@ -3,12 +3,14 @@ package banking
 import banking.domain.AccountId
 import banking.domain.InsufficientFunds
 import banking.domain.Money
+import banking.domain.TransactionType
 import banking.domain.UserId
+import java.math.BigInteger
 import java.util.Currency
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -32,15 +34,10 @@ class LedgerServiceConcurrencyTest {
             }
         }
 
-        val succeeded = results.count { it == Outcome.SUCCESS }
-        val rejected = results.count { it == Outcome.REJECTED }
-        assertEquals(workers, succeeded + rejected)
-        assertTrue(succeeded > 0)
-        assertTrue(rejected > 0)
-        assertEquals(10, succeeded)
+        assertEquals(10, results.count { it == Outcome.SUCCESS })
+        assertEquals(40, results.count { it == Outcome.REJECTED })
         assertEquals(usd(0), service.balance(accountId))
         assertEquals(projectBalance(service, accountId), service.balance(accountId))
-        assertTrue(service.balance(accountId) >= usd(0))
     }
 
     @Test
@@ -83,37 +80,32 @@ class LedgerServiceConcurrencyTest {
     }
 
     @Test
-    fun balance_reads_during_mutations_do_not_corrupt_state() {
+    fun balance_reads_during_mutations_only_observe_committed_balances() {
         val service = LedgerService()
         val accountId = service.createAccount(userId(), usd(500))
-        val stop = AtomicInteger(0)
-        val seenNegative = AtomicInteger(0)
-        val readers = Executors.newFixedThreadPool(4)
-        val readerStart = CountDownLatch(4)
-        repeat(4) {
+        val step = usd(10)
+        val stop = AtomicBoolean(false)
+        val readerCount = 4
+        val readers = Executors.newFixedThreadPool(readerCount)
+        val readerStart = CountDownLatch(readerCount)
+        val reads = List(readerCount) {
             readers.submit {
                 readerStart.countDown()
-                while (stop.get() == 0) {
+                while (!stop.get()) {
                     val balance = service.balance(accountId)
-                    if (balance < usd(0)) {
-                        seenNegative.incrementAndGet()
-                    }
+                    assertTrue(balance in usd(300)..usd(500), "balance outside committed range: $balance")
+                    assertEquals(BigInteger.ZERO, balance.amountMinor.mod(step.amountMinor), "torn balance: $balance")
                 }
             }
         }
         assertTrue(readerStart.await(5, TimeUnit.SECONDS))
         runConcurrent(20) {
-            try {
-                service.withdraw(accountId, usd(10))
-                Outcome.SUCCESS
-            } catch (_: InsufficientFunds) {
-                Outcome.REJECTED
-            }
+            service.withdraw(accountId, step)
+            Outcome.SUCCESS
         }
-        stop.set(1)
+        stop.set(true)
+        reads.forEach { it.get(5, TimeUnit.SECONDS) }
         readers.shutdown()
-        assertTrue(readers.awaitTermination(5, TimeUnit.SECONDS))
-        assertEquals(0, seenNegative.get())
         assertEquals(usd(300), service.balance(accountId))
         assertEquals(projectBalance(service, accountId), service.balance(accountId))
     }
@@ -122,24 +114,19 @@ class LedgerServiceConcurrencyTest {
 
     private fun runConcurrent(workers: Int, task: (Int) -> Outcome): List<Outcome> {
         val start = CountDownLatch(1)
-        val done = CountDownLatch(workers)
-        val outcomes = Array<Outcome?>(workers) { null }
         val pool = Executors.newFixedThreadPool(workers)
-        repeat(workers) { index ->
-            pool.submit {
-                start.await()
-                try {
-                    outcomes[index] = task(index)
-                } finally {
-                    done.countDown()
+        try {
+            val futures = List(workers) { index ->
+                pool.submit<Outcome> {
+                    start.await()
+                    task(index)
                 }
             }
+            start.countDown()
+            return futures.map { it.get(15, TimeUnit.SECONDS) }
+        } finally {
+            pool.shutdownNow()
         }
-        start.countDown()
-        assertTrue(done.await(15, TimeUnit.SECONDS), "concurrent work timed out")
-        pool.shutdown()
-        assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS))
-        return outcomes.map { checkNotNull(it) }
     }
 
     private fun projectBalance(service: LedgerService, accountId: AccountId): Money {
@@ -147,12 +134,8 @@ class LedgerServiceConcurrencyTest {
         val currency = entries.first().amount.currency
         return entries.fold(Money(0, currency)) { running, entry ->
             when (entry.type) {
-                banking.domain.TransactionType.DEPOSIT,
-                banking.domain.TransactionType.TRANSFER_IN,
-                -> running + entry.amount
-                banking.domain.TransactionType.WITHDRAWAL,
-                banking.domain.TransactionType.TRANSFER_OUT,
-                -> running - entry.amount
+                TransactionType.DEPOSIT, TransactionType.TRANSFER_IN -> running + entry.amount
+                TransactionType.WITHDRAWAL, TransactionType.TRANSFER_OUT -> running - entry.amount
             }
         }
     }

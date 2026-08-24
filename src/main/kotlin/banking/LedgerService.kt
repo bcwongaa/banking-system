@@ -30,10 +30,9 @@ class LedgerService(
         if (!isPositiveAmount(initialDeposit)) throw InvalidAmount("Initial deposit must be greater than zero")
         val accountId = AccountId.generate()
         val account = Account(accountId, userId, initialDeposit.currency)
-        val accountRecord = AccountRecord(
+        val accountRecord = AccountRecord.opened(
             account = account,
-            balance = initialDeposit,
-            entries = listOf(newEntry(accountId, initialDeposit, TransactionType.DEPOSIT)),
+            openingEntry = newEntry(accountId, initialDeposit, TransactionType.DEPOSIT),
         )
         check(ledgerStore.putIfAbsent(accountRecord)) { "Generated account id collided" }
         return accountId
@@ -92,14 +91,6 @@ class LedgerService(
     fun balance(accountId: AccountId): Money = ensureGetAccountRecord(accountId).balance
 
     fun history(accountId: AccountId): List<LedgerEntry> = ensureGetAccountRecord(accountId).entries.toList()
-
-    private fun AccountRecord.applied(ledgerEntry: LedgerEntry): AccountRecord {
-        val newBalance = when (ledgerEntry.type) {
-            TransactionType.DEPOSIT, TransactionType.TRANSFER_IN -> balance + ledgerEntry.amount
-            TransactionType.WITHDRAWAL, TransactionType.TRANSFER_OUT -> balance - ledgerEntry.amount
-        }
-        return copy(balance = newBalance, entries = entries + ledgerEntry)
-    }
 
     private fun newEntry(
         accountId: AccountId,

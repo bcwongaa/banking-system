@@ -11,4 +11,11 @@ data class LedgerEntry(
     val type: TransactionType,
     val occurredAt: Instant,
     val recordedAt: Instant,
-)
+) {
+    // The sign is what a TransactionType means, so it belongs here and not in the storage record.
+    val signedAmount: Money
+        get() = when (type) {
+            TransactionType.DEPOSIT, TransactionType.TRANSFER_IN -> amount
+            TransactionType.WITHDRAWAL, TransactionType.TRANSFER_OUT -> -amount
+        }
+}

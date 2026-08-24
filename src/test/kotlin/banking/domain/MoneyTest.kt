@@ -1,11 +1,13 @@
 package banking.domain
 
+import java.lang.reflect.Modifier
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.util.Currency
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class MoneyTest {
@@ -124,6 +126,21 @@ class MoneyTest {
             Money.ofMajorUnits(BigDecimal("1"), gold)
         }
         assertEquals("XAU has no minor unit; use ofMinorUnits", rejected.message)
+    }
+
+    // detect deletion of @COnsistentCopyVisiblity, i.e. preventing money.copy(...) from compiling.
+    // Money shall be created via the ofMinorUnits or ofMajorUnits methods.
+    @Test
+    fun negation_flips_the_sign_and_keeps_the_currency() {
+        assertEquals(Money.ofMinorUnits(-500, usd), -Money.ofMinorUnits(500, usd))
+        assertEquals(Money.ofMinorUnits(500, usd), -Money.ofMinorUnits(-500, usd))
+        assertEquals(Money.ofMinorUnits(0, usd), -Money.ofMinorUnits(0, usd))
+    }
+
+    @Test
+    fun copy_is_not_a_second_way_to_construct_money() {
+        val generatedCopy = Money::class.java.declaredMethods.single { it.name == "copy" }
+        assertFalse(Modifier.isPublic(generatedCopy.modifiers))
     }
 
     @Test

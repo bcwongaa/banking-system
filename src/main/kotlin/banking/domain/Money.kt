@@ -14,6 +14,8 @@ data class Money private constructor(
         return Money(amountMinor.add(other.amountMinor), currency)
     }
 
+    operator fun unaryMinus(): Money = Money(amountMinor.negate(), currency)
+
     operator fun minus(other: Money): Money {
         requireSameCurrency(other)
         return Money(amountMinor.subtract(other.amountMinor), currency)

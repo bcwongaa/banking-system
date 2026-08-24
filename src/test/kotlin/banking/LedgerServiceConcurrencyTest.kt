@@ -37,6 +37,7 @@ class LedgerServiceConcurrencyTest {
         assertEquals(10, results.count { it == Outcome.SUCCESS })
         assertEquals(40, results.count { it == Outcome.REJECTED })
         assertEquals(usd(0), service.balance(accountId))
+        assertTrue(service.balance(accountId) >= usd(0))
         assertEquals(projectBalance(service, accountId), service.balance(accountId))
     }
 
@@ -132,7 +133,7 @@ class LedgerServiceConcurrencyTest {
     private fun projectBalance(service: LedgerService, accountId: AccountId): Money {
         val entries = service.history(accountId)
         val currency = entries.first().amount.currency
-        return entries.fold(Money(0, currency)) { running, entry ->
+        return entries.fold(Money.ofMinorUnits(0, currency)) { running, entry ->
             when (entry.type) {
                 TransactionType.DEPOSIT, TransactionType.TRANSFER_IN -> running + entry.amount
                 TransactionType.WITHDRAWAL, TransactionType.TRANSFER_OUT -> running - entry.amount
@@ -140,7 +141,7 @@ class LedgerServiceConcurrencyTest {
         }
     }
 
-    private fun usd(cents: Long): Money = Money(cents, usd)
+    private fun usd(cents: Long): Money = Money.ofMinorUnits(cents, usd)
 
     private fun userId(): UserId = UserId(Uuid.random())
 }

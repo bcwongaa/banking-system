@@ -1,27 +1,22 @@
 package banking.domain
 
+import java.math.BigDecimal
 import java.math.BigInteger
 import java.util.Currency
 
-data class Money(
-    val amountMinor: BigInteger,
+@ConsistentCopyVisibility
+data class Money private constructor(
+    val amountMinor: BigInteger, // The base unit of a currency, for example USD is cents.
     val currency: Currency,
 ) : Comparable<Money> {
-    constructor(amountMinor: Long, currency: Currency) : this(amountMinor.toBigInteger(), currency)
-
-    init {
-        require(amountMinor.signum() >= 0) { "Money amount must be non-negative" }
-    }
-
     operator fun plus(other: Money): Money {
         requireSameCurrency(other)
-        return copy(amountMinor = amountMinor.add(other.amountMinor))
+        return Money(amountMinor.add(other.amountMinor), currency)
     }
 
     operator fun minus(other: Money): Money {
         requireSameCurrency(other)
-        require(amountMinor >= other.amountMinor) { "Money amount must be non-negative" }
-        return copy(amountMinor = amountMinor.subtract(other.amountMinor))
+        return Money(amountMinor.subtract(other.amountMinor), currency)
     }
 
     override fun compareTo(other: Money): Int {
@@ -32,6 +27,23 @@ data class Money(
     private fun requireSameCurrency(other: Money) {
         require(currency == other.currency) {
             "Currency mismatch: ${currency.currencyCode} vs ${other.currency.currencyCode}"
+        }
+    }
+
+    companion object {
+        fun ofMinorUnits(amountMinor: Long, currency: Currency): Money =
+            Money(amountMinor.toBigInteger(), currency)
+
+        fun ofMinorUnits(amountMinor: BigInteger, currency: Currency): Money =
+            Money(amountMinor, currency)
+
+        // setScale without a RoundingMode throws rather than silently rounding money away
+        fun ofMajorUnits(amountMajor: BigDecimal, currency: Currency): Money {
+            val minorUnitDigits = currency.defaultFractionDigits
+            require(minorUnitDigits >= 0) {
+                "${currency.currencyCode} has no minor unit; use ofMinorUnits"
+            }
+            return Money(amountMajor.setScale(minorUnitDigits).unscaledValue(), currency)
         }
     }
 }

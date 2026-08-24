@@ -85,6 +85,22 @@ class LedgerServiceTest {
     }
 
     @Test
+    fun negative_amounts_are_rejected_by_every_mutation() {
+        val service = service()
+        val source = service.createAccount(userId(), usd(100))
+        val destination = service.createAccount(userId(), usd(100))
+        val negative = usd(-1)
+
+        assertFailsWith<InvalidAmount> { service.deposit(source, negative) }
+        assertFailsWith<InvalidAmount> { service.withdraw(source, negative) }
+        assertFailsWith<InvalidAmount> { service.transfer(source, destination, negative) }
+        assertFailsWith<InvalidAmount> { service.createAccount(userId(), negative) }
+
+        assertEquals(usd(100), service.balance(source))
+        assertEquals(usd(100), service.balance(destination))
+    }
+
+    @Test
     fun deposit_into_a_missing_account_is_rejected() {
         val service = service()
         assertFailsWith<AccountNotFound> {
@@ -342,15 +358,15 @@ class LedgerServiceTest {
         }
     }
 
-    private fun usd(cents: Long): Money = Money(cents, usd)
+    private fun usd(cents: Long): Money = Money.ofMinorUnits(cents, usd)
 
-    private fun eur(cents: Long): Money = Money(cents, eur)
+    private fun eur(cents: Long): Money = Money.ofMinorUnits(cents, eur)
 
     private fun userId(): UserId = UserId(Uuid.random())
 
     private fun project(entries: List<LedgerEntry>): Money {
         val currency = entries.first().amount.currency
-        return entries.fold(Money(0, currency)) { running, entry ->
+        return entries.fold(Money.ofMinorUnits(0, currency)) { running, entry ->
             when (entry.type) {
                 TransactionType.DEPOSIT, TransactionType.TRANSFER_IN -> running + entry.amount
                 TransactionType.WITHDRAWAL, TransactionType.TRANSFER_OUT -> running - entry.amount

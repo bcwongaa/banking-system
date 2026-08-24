@@ -15,11 +15,13 @@ import banking.persistence.InMemoryLedgerStore
 import banking.persistence.LedgerStore
 import java.time.Clock
 import java.time.Instant
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.Currency
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlin.uuid.Uuid
 
@@ -117,7 +119,7 @@ class LedgerServiceTest {
         assertEquals(TransactionType.DEPOSIT, entry.type)
         assertEquals(usd(25), entry.amount)
         assertEquals(accountId, entry.accountId)
-        assertEquals(instant, entry.timestamp)
+        assertEquals(instant, entry.occurredAt)
     }
 
     @Test
@@ -168,7 +170,7 @@ class LedgerServiceTest {
         val entry = service.history(accountId).last()
         assertEquals(TransactionType.WITHDRAWAL, entry.type)
         assertEquals(usd(40), entry.amount)
-        assertEquals(instant, entry.timestamp)
+        assertEquals(instant, entry.occurredAt)
     }
 
     @Test
@@ -264,8 +266,8 @@ class LedgerServiceTest {
         assertEquals(usd(30), out.amount)
         assertEquals(usd(30), incoming.amount)
         assertEquals(out.transactionId, incoming.transactionId)
-        assertEquals(instant, out.timestamp)
-        assertEquals(instant, incoming.timestamp)
+        assertEquals(instant, out.occurredAt)
+        assertEquals(instant, incoming.occurredAt)
     }
 
     @Test
@@ -345,7 +347,50 @@ class LedgerServiceTest {
         assertFailsWith<AccountNotFound> { service.balance(AccountId.generate()) }
     }
 
+    @Test
+    fun both_legs_of_a_transfer_share_one_occurrence_instant() {
+        val service = LedgerService(clock = TickingClock(instant))
+        val source = service.createAccount(userId(), usd(100))
+        val destination = service.createAccount(userId(), usd(20))
+        service.transfer(source, destination, usd(30))
+
+        val out = service.history(source).last()
+        val incoming = service.history(destination).last()
+        assertEquals(out.occurredAt, incoming.occurredAt)
+    }
+
+    @Test
+    fun each_leg_of_a_transfer_is_recorded_as_its_own_write() {
+        val service = LedgerService(clock = TickingClock(instant))
+        val source = service.createAccount(userId(), usd(100))
+        val destination = service.createAccount(userId(), usd(20))
+        service.transfer(source, destination, usd(30))
+
+        val out = service.history(source).last()
+        val incoming = service.history(destination).last()
+        assertNotEquals(out.recordedAt, incoming.recordedAt)
+    }
+
+    @Test
+    fun an_entry_is_recorded_no_earlier_than_it_occurred() {
+        val service = LedgerService(clock = TickingClock(instant))
+        val accountId = service.createAccount(userId(), usd(100))
+        service.deposit(accountId, usd(25))
+
+        val entry = service.history(accountId).last()
+        assertTrue(entry.recordedAt >= entry.occurredAt)
+    }
+
     private fun service(): LedgerService = LedgerService(clock = clock)
+
+    // A fixed clock cannot tell occurredAt and recordedAt apart; this one advances on every read.
+    private class TickingClock(private var current: Instant) : Clock() {
+        override fun instant(): Instant = current.also { current = current.plusMillis(1) }
+
+        override fun getZone(): ZoneId = ZoneOffset.UTC
+
+        override fun withZone(zone: ZoneId): Clock = this
+    }
 
     private class RecordingStore(
         private val inner: InMemoryLedgerStore = InMemoryLedgerStore(),

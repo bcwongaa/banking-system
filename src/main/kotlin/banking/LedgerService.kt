@@ -62,12 +62,12 @@ class LedgerService(
         }
     }
 
-    fun transfer(sourceId: AccountId, destinationId: AccountId, amount: Money) {
-        if (sourceId == destinationId) throw SameAccountTransfer()
+    fun transfer(sourceAccount: AccountId, destinationAccount: AccountId, amount: Money) {
+        if (sourceAccount == destinationAccount) throw SameAccountTransfer()
         if (!isPositiveAmount(amount)) throw InvalidAmount("Transfer amount must be greater than zero")
-        lockTwoAccounts(sourceId, destinationId) {
-            val sourceRecord = ensureGetAccountRecord(sourceId)
-            val destinationRecord = ensureGetAccountRecord(destinationId)
+        lockTwoAccounts(sourceAccount, destinationAccount) {
+            val sourceRecord = ensureGetAccountRecord(sourceAccount)
+            val destinationRecord = ensureGetAccountRecord(destinationAccount)
             if (!isCurrencyMatch(sourceRecord.account, amount)) {
                 throw CurrencyMismatch("Transfer currency does not match the source account")
             }
@@ -77,13 +77,13 @@ class LedgerService(
             if (sourceRecord.balance < amount) throw InsufficientFunds()
 
             val transactionId = TransactionId.generate()
-            val timestamp = Instant.now(clock)
+            val occurredAt = Instant.now(clock)
             ledgerStore.put(
                 sourceRecord.applied(
-                    newEntry(sourceId, amount, TransactionType.TRANSFER_OUT, transactionId, timestamp),
+                    newEntry(sourceAccount, amount, TransactionType.TRANSFER_OUT, transactionId, occurredAt),
                 ),
                 destinationRecord.applied(
-                    newEntry(destinationId, amount, TransactionType.TRANSFER_IN, transactionId, timestamp),
+                    newEntry(destinationAccount, amount, TransactionType.TRANSFER_IN, transactionId, occurredAt),
                 ),
             )
         }
@@ -106,13 +106,14 @@ class LedgerService(
         amount: Money,
         type: TransactionType,
         transactionId: TransactionId = TransactionId.generate(),
-        timestamp: Instant = Instant.now(clock),
+        occurredAt: Instant = Instant.now(clock),
     ): LedgerEntry = LedgerEntry(
         transactionId = transactionId,
         accountId = accountId,
         amount = amount,
         type = type,
-        timestamp = timestamp,
+        occurredAt = occurredAt,
+        recordedAt = Instant.now(clock),
     )
 
     private fun ensureGetAccountRecord(accountId: AccountId): AccountRecord =

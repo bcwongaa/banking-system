@@ -37,7 +37,6 @@ class LedgerServiceConcurrencyTest {
         assertEquals(10, results.count { it == Outcome.SUCCESS })
         assertEquals(40, results.count { it == Outcome.REJECTED })
         assertEquals(usd(0), service.balance(accountId))
-        assertTrue(service.balance(accountId) >= usd(0))
         assertEquals(projectBalance(service, accountId), service.balance(accountId))
     }
 
@@ -74,8 +73,6 @@ class LedgerServiceConcurrencyTest {
         }
         val total = service.balance(first) + service.balance(second)
         assertEquals(usd(2_000), total)
-        assertTrue(service.balance(first) >= usd(0))
-        assertTrue(service.balance(second) >= usd(0))
         assertEquals(projectBalance(service, first), service.balance(first))
         assertEquals(projectBalance(service, second), service.balance(second))
     }

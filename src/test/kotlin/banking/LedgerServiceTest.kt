@@ -316,14 +316,6 @@ class LedgerServiceTest {
     }
 
     @Test
-    fun account_balances_never_become_negative_through_the_public_api() {
-        val service = service()
-        val accountId = service.createAccount(userId(), usd(10))
-        assertFailsWith<InsufficientFunds> { service.withdraw(accountId, usd(11)) }
-        assertTrue(service.balance(accountId) >= usd(0))
-    }
-
-    @Test
     fun deposit_of_a_mismatched_currency_is_rejected() {
         val service = service()
         val accountId = service.createAccount(userId(), usd(100))

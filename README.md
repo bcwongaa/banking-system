@@ -1,8 +1,6 @@
 # Banking service
 
-In-process Kotlin component that manages accounts, deposits, withdrawals, transfers and balance queries on top of an append-only ledger. Solution to `senior_engineer_test.md`.
-
-No framework, no HTTP, no database — the brief asks for a software component, and in-memory storage is sufficient.
+An in-process Kotlin component that manages accounts and processes deposits, withdrawals, transfers and balance queries on top of an append-only ledger. Solution to `senior_engineer_test.md`.
 
 ## Run
 
@@ -10,86 +8,99 @@ No framework, no HTTP, no database — the brief asks for a software component, 
 ./gradlew test
 ```
 
-Requires a JDK on the path to bootstrap Gradle; the build itself targets JDK 25 via the Gradle toolchain (auto-provisioned by the foojay resolver if absent). Kotlin 2.4, Gradle 9.3, `kotlin.test` on JUnit 5.
+A JDK must be on the path to bootstrap Gradle; the build targets JDK 25 through the Gradle toolchain. Kotlin 2.4, Gradle 9.3, `kotlin.test` on JUnit 5. No other dependencies.
 
 ## Layout
 
 ```
 src/main/kotlin/banking/
-  LedgerService.kt            public API + concurrency control
+  LedgerService.kt            public API, validation, concurrency control
   domain/
-    Money.kt                  BigInteger minor units + java.util.Currency, never negative
-    AccountId / TransactionId / UserId.kt   value classes over kotlin.uuid.Uuid
-    Account.kt                accountId, userId, currency (no balance)
-    LedgerEntry.kt            transactionId, accountId, amount, type, timestamp
+    Money.kt                  signed BigInteger minor units + java.util.Currency
+    Account.kt                accountId, userId, currency — no balance
+    AccountId.kt              value class over kotlin.uuid.Uuid
+    TransactionId.kt          value class over kotlin.uuid.Uuid, distinct from AccountId
+    UserId.kt                 value class over kotlin.uuid.Uuid
+    LedgerEntry.kt            transactionId, accountId, amount, type, occurredAt, recordedAt
     TransactionType.kt        DEPOSIT, WITHDRAWAL, TRANSFER_IN, TRANSFER_OUT
     BankingException.kt       sealed hierarchy of domain errors
   persistence/
     LedgerStore.kt            get / put(vararg) / putIfAbsent
     InMemoryLedgerStore.kt    ConcurrentHashMap<AccountId, AccountRecord>
-    AccountRecord.kt          account + materialized balance + ledger entries (immutable)
-src/test/kotlin/banking/
-  LedgerServiceTest.kt             behaviour + ledger invariants (fixed clock)
-  LedgerServiceConcurrencyTest.kt  races: overdraw, independent accounts, transfers, reads
-  domain/MoneyTest.kt, AccountIdTest.kt
+    AccountRecord.kt          account + balance + entries
 ```
 
 ## API
 
 ```kotlin
-val service = LedgerService()                       // optional: clock, store
-val id = service.createAccount(userId, Money(1_000, USD))
-service.deposit(id, Money(250, USD))
-service.withdraw(id, Money(100, USD))               // throws InsufficientFunds on overdraft
-service.transfer(id, otherId, Money(50, USD))       // atomic, shared TransactionId on both entries
-service.balance(id)                                 // Money
-service.history(id)                                 // List<LedgerEntry>, oldest first
+val service = LedgerService()                                  // clock and store are injectable
+
+val id = service.createAccount(userId, Money.ofMinorUnits(1_000, usd))
+service.deposit(id, Money.ofMinorUnits(250, usd))
+service.withdraw(id, Money.ofMinorUnits(100, usd))             // InsufficientFunds if too large
+service.transfer(id, otherId, Money.ofMinorUnits(50, usd))     // one write, paired ledger entries
+service.balance(id)                                            // Money
+service.history(id)                                            // List<LedgerEntry>, oldest first
 ```
 
-All failures throw a `BankingException` subtype: `InvalidAmount`, `AccountNotFound`, `InsufficientFunds`, `CurrencyMismatch`, `SameAccountTransfer`. A failed operation leaves balances and history untouched.
+Every failure is a `BankingException` subtype: `InvalidAmount`, `AccountNotFound`, `InsufficientFunds`, `CurrencyMismatch`, `SameAccountTransfer`. A failed operation changes nothing. Each place that throws writes its own message, so a rejected transfer says whether it was the source or the destination currency that did not match.
 
 ## Design
 
-**Money.** Integer minor units (`BigInteger`) tagged with a `Currency`. No `Double`/`Float`, no `BigDecimal` scale surprises, no overflow. `Money` is never negative; direction lives in `TransactionType`, not the sign. Arithmetic and comparison across currencies throw.
+**Money only does maths.** Amounts are whole numbers of the currency's smallest unit — cents for USD — held as `BigInteger` and tagged with a `java.util.Currency`. No floating point, so nothing rounds by accident. Adding or comparing two different currencies throws. `Money` knows nothing about banking: it can be negative, because subtracting a larger amount from a smaller one is ordinary maths.
 
-**Ledger vs balance.** Every mutation appends a `LedgerEntry` and updates a materialized balance; both live in one immutable `AccountRecord` so a read always sees a balance that agrees with its history. Tests assert `balance == fold(history)` after every scenario, including the concurrent ones.
+You cannot call the constructor. Amounts are built through `Money.ofMinorUnits(500, usd)` — 500 cents — or `Money.ofMajorUnits(BigDecimal("5.00"), usd)` — 5 dollars. Every place that creates money therefore says which unit it means, and `Money(500, usd)` will not compile. `ofMajorUnits` converts using the currency's own number of decimal places, so it is right for yen (0 decimals) and Kuwaiti dinar (3), not just cents. If the amount is more precise than the currency allows — `5.005` USD — it throws instead of quietly rounding it away.
 
-**Concurrency.**
-- One `ReentrantLock` per account, created lazily. Single-account operations hold that lock for read-validate-write.
-- Transfers lock both accounts in a fixed order (by `Uuid`) to rule out deadlock, then write both updated records in a single `store.put(source, destination)` call.
-- `balance()` / `history()` are lock-free: they read the latest committed immutable record.
-- Consistency model: each account is linearizable; balances never go negative and writers cannot lose updates. Reads across *two* accounts are not snapshot-isolated — the in-memory store writes the two records of a transfer sequentially, so a reader summing both balances during that window can briefly see the in-flight amount on neither side. Final totals are always conserved.
+**Each entry records two times.** `occurredAt` is when the transaction happened; `recordedAt` is when the row was written down.
 
-**Persistence boundary.** `LedgerStore` is the only seam to storage. The service owns locking; the store is a plain record map. `put(vararg)` makes the atomicity requirement of a transfer explicit in the contract, so a database-backed implementation would wrap it in one transaction.
+**Concurrency.** Each account has its own lock, created on first use and held while an operation reads the balance, checks it and writes the result. A transfer takes both accounts' locks, always in the same order sorted by id, preventing deadlock. Reading a balance or history takes no lock at all: records are immutable, so a reader always sees a complete, finished version.
 
-### Decisions not dictated by the brief
+The effect is that operations on one account happen one at a time and in order, balances never go negative, and no update is ever lost. One gap: a reader looking at *two* accounts during a transfer can briefly see the money in neither, because the two records are written one after the other. No money is created or destroyed either way. .
 
-| Decision | Choice | Why |
+### Business Logic Decisions 
+
+| Decision | Choice                                                 |
+|---|--------------------------------------------------------|
+| Opening an account with zero | rejected — as requested                                |
+| Transfer to the same account | rejected — it would mean nothing in the ledger         |
+| Moving money between currencies | rejected — exchange rates are out of scope             |
+| Reporting failures | exceptions rather than a `Result` type                 |
+| Recording a transfer | two entries sharing one `TransactionId`                |
+| Time | an injected `java.time.Clock`, so tests are repeatable |
+| Negative `Money` | allowed because negative money itself make sense       |
+| Accounts per customer | unlimited, including several in the same currency      |
+
+## Tests
+
+67 tests, nothing beyond `kotlin.test` on JUnit 5.
+
+| File | Count | Covers |
 |---|---|---|
-| Initial deposit of zero | rejected | brief says "with an initial deposit"; `InvalidAmount` |
-| Transfer to self | rejected | `SameAccountTransfer`; no meaningful ledger semantics |
-| Cross-currency ops | rejected | `CurrencyMismatch`; FX is out of scope |
-| Errors | exceptions, not `Result` | smallest idiomatic Kotlin surface; callers that want values can wrap |
-| Transfer history | two entries sharing one `TransactionId` | per-account history stays self-contained, pairing is still recoverable |
-| Timestamps | injected `java.time.Clock` | deterministic tests |
+| `LedgerServiceTest` | 35 | every operation and how it fails, history, currency mismatches, timestamps |
+| `MoneyTest` | 20 | arithmetic, currency guards, both factories, construction |
+| `LedgerServiceConcurrencyTest` | 4 | racing withdrawals, separate accounts, transfers, reads during writes |
+| `AccountRecordTest` | 4 | balance follows the entries; the record cannot be built any other way |
+| `LedgerEntryTest` | 2 | which way each transaction type moves money |
+| `AccountIdTest` | 2 | ids are unique, and account ids are not transaction ids |
 
-## Discussion points for the pairing session
+## Known limitations
 
-- **Store atomicity vs. reads.** Writers are correct; cross-account reads are not snapshot-isolated (see above). A real database would make `put(vararg)` one transaction; an in-memory equivalent would need a global snapshot (e.g. one immutable map behind an `AtomicReference`) at the cost of copying on every write.
-- **History copy cost.** `AccountRecord.entries` is rebuilt on each mutation (`entries + entry`), so an account with *n* entries pays O(n) per write. Fine for the exercise; a persistent collection or a separate append-only ledger removes the ceiling.
-- **Lock map growth.** `locks` never shrinks because accounts are never closed. Account lifecycle (close/freeze) is unaddressed.
-- **Idempotency.** No client-supplied idempotency key, so a retried `transfer` after a timeout would double-apply.
-- **Currency scale.** `Money` does not validate `amountMinor` against `Currency.defaultFractionDigits`; minor units are taken at face value.
-- **Result types vs. exceptions** for expected outcomes like `InsufficientFunds`.
+- A reader looking at two accounts mid-transfer can briefly see the money in neither. A database would make the two writes one transaction.
+- Each new entry copies the whole list, so an account with *n* entries costs O(n) per write.
+- `put` overwrites whatever is there. The service never misuses it, but nothing in the type system prevents it.
+- No idempotency key, so a retried transfer or account creation after a timeout would happen twice.
+- `ofMinorUnits` takes the number it is given; only `ofMajorUnits` checks it against the currency's decimal places.
 
-## AI usage
+## How AI was used
 
-The first pass was generated by Grok Build through three staged prompts, in order: domain types (`docs/ai/DATATYPE_GENERATION`), test suite (`docs/ai/TESTS.md`), then service and persistence (`docs/ai/OBJECTIVE.md`), under the agent guidance file `docs/ai/AGENTS.md`. Those files are kept verbatim for transparency.
+AI tools were used throughout, following a process I maintain as a public set of development guides: <https://github.com/bcwongaa/LLM-dev-guides>. Applying them to this task exposed several gaps, which I fixed in the guides as I went.
 
-Claude Code then reviewed that pass against the brief and the prompts. It found no correctness bugs; it flagged and — after my approval — fixed the following:
+1. **Scope.** Decided what to build and what to leave out — no database, no API layer, in-memory storage — before any code was written.
+2. **Setup.** Built the Gradle and Kotlin module, JDK toolchain and test harness by hand, so the generated code had a fixed target instead of choosing its own stack.
+3. **Specification, then a first pass.** Wrote the domain model and test suite as briefs, kept in `docs/ai/`, and had Grok Build implement them. Immediately pass through one review via Claude code as well to catch bugs before I started reading.
+4. **Test review.** Went through each generated test file to check it tested what it claimed. Several could not fail at all; those were fixed before I trusted the implementation.
+5. **Code review and challenge.** Questioned naming, structure and any decision I disagreed with, and asked for the reasoning instead of accepting the output. Letting `Money` go negative, splitting the timestamp in two, and locking down how an account record is built all came out of that. Suggestions beyond the scope of the exercise were dropped.
+6. **Re-checking.** Ran the full suite after every edit, and checked the compiler-enforced rules by deliberately breaking them to confirm the right test failed.
+7. **Documentation.** Written last, then checked against the source.
 
-- transfer wrote the two updated records with two separate store calls; `LedgerStore.put` is now variadic and a transfer is one write (covered by `transfer_commits_both_sides_in_a_single_store_write`, written red-first);
-- the concurrent-read test could not fail: its negative-balance check was unreachable (`Money` forbids negatives) and reader exceptions were swallowed in unread futures; it now asserts the set of committed balances and surfaces worker exceptions via `Future.get()`;
-- duplicated record-update code collapsed into `AccountRecord.applied(entry)`, `Uuid` ordering via `compareTo` instead of `toString()`, amount validation moved before lock acquisition, a tautological assertion removed.
-
-Every change was reviewed by me, and the full suite was run after each step. This README is co-written; the design decisions above are mine to defend.
+AI supplied speed on the mechanical work: scaffolding, the first pass of the types and tests, and repetitive refactoring. The design decisions are mine.

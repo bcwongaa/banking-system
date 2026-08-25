@@ -1,0 +1,68 @@
+You are working on the Kotlin banking-service coding exercise in this repository.
+
+Follow the repository's adopted LLM-dev-guides governance and project instructions. Load only the guides relevant to this task.
+
+Your task in this step is ONLY to design and implement the core domain/data types.
+
+Do not implement LedgerService business operations yet.
+Do not implement repository persistence yet.
+Do not implement concurrency mechanisms yet.
+Do not add Spring, REST, a database, or additional infrastructure.
+
+The banking domain needs to support:
+
+- Accounts
+- Account IDs
+- Transactions / ledger entries
+- Transaction IDs
+- Monetary amounts
+- Transaction types
+
+The intended model is:
+
+Account
+- accountId
+- userId
+- currency
+
+LedgerEntry
+- transactionId
+- accountId
+- amount
+- transaction type
+- timestamp
+
+The current account balance should NOT be treated as the historical ledger itself. The eventual design should allow a materialized balance projection to coexist with an append-only transaction history.
+
+Requirements:
+
+1. Use Kotlin idiomatically.
+2. Use immutable domain objects where possible.
+3. Do not use Double or Float for monetary values.
+4. Use an exact monetary representation appropriate for Kotlin/JVM.
+5. Investigate the Kotlin version configured in the project before choosing Kotlin-specific APIs.
+6. Prefer strongly typed identifiers rather than passing raw Strings/UUIDs everywhere.
+7. Consider Kotlin value classes for AccountId and TransactionId where appropriate.
+8. AccountId and TransactionId must be distinct types even if they use the same underlying UUID representation.
+9. Monetary values must retain currency information where that is necessary to prevent accidental cross-currency operations.
+10. Define sensible invariants at the datatype/domain boundary.
+11. Avoid speculative fields or abstractions that are not required by the exercise.
+12. Keep the model small and easy to explain in a pair-programming interview.
+
+Before implementing:
+- Inspect the existing project structure and Kotlin version.
+- Check the applicable project/governance guidance.
+- Briefly state the proposed datatype model and any decisions that are not directly specified by the exercise.
+
+Then implement only the datatype/domain layer.
+
+Add focused unit tests for datatype invariants where appropriate.
+
+Do not proceed into service/repository implementation.
+
+At the end, report:
+- Files created/changed
+- Important datatype decisions
+- Invariants enforced
+- Tests added and their result
+- Any unresolved design decisions that should be decided before implementing the service
